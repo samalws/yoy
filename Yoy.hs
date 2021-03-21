@@ -73,6 +73,9 @@ updateTileGroups l g = g -- TODO
 captureTile :: Loc -> Player -> GameBoard -> GameBoard
 captureTile l p g = updateTileGroups l $ g { ownedLocs = M.insert l p (ownedLocs g) }
 
+defaultUnitEnergy :: Int
+defaultUnitEnergy = 5
+
 moveUnit :: Loc -> Loc -> GameBoard -> Maybe GameBoard
 moveUnit l1 l2 g = do
   ug <- return $ units g
@@ -115,18 +118,42 @@ moveUnit l1 l2 g = do
   return $ captureTile l2 (unitPlr u) $ g { units = newUnits, unitEnergies = newEnergies }
 
 buyUnit :: Unit -> Loc -> GameBoard -> Maybe GameBoard
-buyUnit u l g = Nothing -- TODO
+buyUnit u l g = do
+  -- check that loc is owned by owner of u
+  guard $ (Just $ unitPlr u) == (M.lookup l $ ownedLocs g)
+
+  -- check that loc is empty
+  guard $ isNothing $ M.lookup l $ units g
+
+  -- subtract unit cost
+  g2 <- addMoney (-(unitCostBuy u)) l g
+
+  -- make sure new amount of money isn't negative
+  newMoney <- currentMoney l g2
+  guard $ newMoney >= 0
+
+  -- add unit
+  g3 <- return $ g2 { units = M.insert l u $ units g2 }
+
+  -- add energy
+  g4 <- return $ g3 { unitEnergies = M.insert l defaultUnitEnergy $ unitEnergies g3 }
+
+  return g4
 
 currentMoney :: Loc -> GameBoard -> Maybe Int
 currentMoney loc g = do
   addTo <- M.lookup loc $ tileGroups g
   return $ maybe 0 id $ M.lookup addTo $ moneyInTileGroups g
 
+setMoney :: Int -> Loc -> GameBoard -> Maybe GameBoard
+setMoney amt loc g = do
+  addTo <- M.lookup loc $ tileGroups g
+  return $ g { moneyInTileGroups = M.insert addTo amt $ moneyInTileGroups g }
+
 addMoney :: Int -> Loc -> GameBoard -> Maybe GameBoard
 addMoney amt loc g = do
   money <- currentMoney loc g
-  addTo <- M.lookup loc $ tileGroups g
-  return $ g { moneyInTileGroups = M.insert addTo (money + amt) $ moneyInTileGroups g }
+  setMoney (amt+money) loc g
 
 income :: Player -> GameBoard -> GameBoard
 income p g = foldr f g spots where
@@ -134,21 +161,37 @@ income p g = foldr f g spots where
   spots = map fst $ filter ((== p) . snd) ownedPairings
   f spot g2 = maybe g2 id $ addMoney 1 spot g2
 
+plrUnitLocPairs :: Player -> GameBoard -> [(Loc,Unit)]
+plrUnitLocPairs p g = filter ((== p) . unitPlr . snd) $ M.toList $ units g
+
+plrUnitLocs :: Player -> GameBoard -> [Loc]
+plrUnitLocs p g = map fst $ plrUnitLocPairs p g
+
 feedUnits :: Player -> GameBoard -> GameBoard
-feedUnits p g = g -- TODO
+feedUnits p g = foldr f g $ plrUnitLocPairs p g where
+  f (spot,unit) g2 = maybe g2 id $ addMoney (-(unitCostMaint unit)) spot g2
 
 purgeUnits :: Player -> GameBoard -> GameBoard
-purgeUnits p g = g -- TODO
+purgeUnits p g = g5 where
+  -- kill off units, recording where they were
+  (g3, moneysToSetTo0) = foldr f (g,[]) $ plrUnitLocs p g
+  -- set the new amount of money at these places to 0
+  g5 = foldr ff g3 moneysToSetTo0
+  f :: Loc -> (GameBoard,[Loc]) -> (GameBoard,[Loc])
+  f spot orig@(g2,deletedLocs)
+    | maybe True (>= 0) (currentMoney spot g2) = orig
+    | otherwise = (g2 { units = newUnits },spot:deletedLocs) where
+        newUnits = M.delete spot $ units g2
+  ff :: Loc -> GameBoard -> GameBoard
+  ff spot g4 = maybe g4 id $ setMoney 0 spot g4
 
 updateMoney :: Player -> GameBoard -> GameBoard
 updateMoney p = purgeUnits p . feedUnits p . income p
 
 refreshUnitEnergies :: Player -> GameBoard -> GameBoard
 refreshUnitEnergies p g = g { unitEnergies = newEnergies } where
-  newEnergies = foldr f (unitEnergies g) spots
-  unitPairings = M.toList $ units g
-  spots = map fst $ filter ((== p) . unitPlr . snd) unitPairings
-  f spot energies = M.insert spot 5 energies
+  newEnergies = foldr f (unitEnergies g) $ plrUnitLocs p g
+  f spot energies = M.insert spot defaultUnitEnergy energies
 
 switchTurn :: GameBoard -> GameBoard
 switchTurn g = case (playerList g) of
